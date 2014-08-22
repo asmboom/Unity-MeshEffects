@@ -6,7 +6,7 @@ using System.Collections.Generic;
 public class DeformationSourceBehaviour : MonoBehaviour {
 
 	public enum DeformationSourceType{
-		Directionnal = 0, Point = 1, Spirale = 2
+		Directionnal, Point, Spirale
 	}
 
 	#region PRIVATE CLASS
@@ -61,9 +61,9 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 		}
 		
 		public override bool Equals(object obj){
-			if (obj.GetType () == typeof(DeformationSourceState)) {
-				DeformationSourceState source = (DeformationSourceState)obj;
-				return source.range == range && source.coef == coef && base.Equals(obj);
+			if (obj.GetType () == typeof(DeformationSourceBehaviour)) {
+				DeformationSourceBehaviour source = (DeformationSourceBehaviour)obj;
+				return source.effectRange == range && source.effectCoef == coef && base.Equals(source.transform);
 			} else {
 				return base.Equals(obj);
 			}
@@ -77,26 +77,40 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 	#endregion
 
 	#region CONFIG_ATTRIBUTES
-	private float mEffectRange = 10.0f;
+	[SerializeField]
+	public float mEffectRange = 1.0f;
+	[SerializeField]
 	private float mEffectCoef = 1.0f;
-	private bool mEffectIsExponential = true;
+	[SerializeField]
+	private bool mEffectIsExponential = false;
 
+	[SerializeField]
 	private DeformationSourceType mDeformationType = DeformationSourceType.Point;
 
+	[SerializeField]
 	private LayerMask mCullingMask = 255;
 
 	// refreshing
+	[SerializeField]
 	private bool mRefreshOnMove = true;
-	private bool mRefreshOnObjectsMove = false;
+	[SerializeField]
+	private bool mRefreshOnObjectsMove = true;
 
 	// directionnal attributes
+	[SerializeField]
 	private bool mIsBidirectionnal = true;
+
+	// Spirale attributes
+	[SerializeField]
+	private bool mRotateAroundSource = true;
+	[SerializeField]
+	private float mSpiraleAmplitude = 360;
 	#endregion
 
 	#region PRIVATE_ATTRIBUTES
 	// for original and new meshes
-	private List<GameObject> mDeformedObjects;
-	private List<Vector3[]> mOriginalMeshes;
+	private List<GameObject> mDeformedObjects = new List<GameObject>();
+	private List<Vector3[]> mOriginalMeshes = new List<Vector3[]>();
 
 	// delegate to determine the operation to apply for the effect (linear or exponential)
 	private delegate float EffectValueMethod(float x);
@@ -109,10 +123,6 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 	#endregion
 
 	#region MONOBEHAVIOUR
-	void Awake(){
-		mDeformedObjects = new List<GameObject>();
-		mOriginalMeshes = new List<Vector3[]>();
-	}
 
 	void Start () {
 		ApplyMask();
@@ -152,10 +162,14 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 		}
 		get{return mEffectIsExponential;}
 	}
+	public bool isBidirectionnal{
+		get{return mIsBidirectionnal;}
+		set{mIsBidirectionnal = value;}
+	}
 	public bool refreshOnObjectsMove{
 		set{
 			mRefreshOnObjectsMove = value;
-			if(mRefreshOnObjectsMove){
+			if(mRefreshOnObjectsMove && mPreviousTransforms != null){
 				mPreviousTransforms.Clear();
 				mPreviousTransforms = null;
 			}
@@ -166,6 +180,8 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 		get{return mRefreshOnObjectsMove;}
 	}
 	public bool refreshOnMove{
+		set{mRefreshOnMove = value;}
+		get{return mRefreshOnMove;}
 	}
 	public float effectRange{
 		set{mEffectRange = value;}
@@ -174,6 +190,22 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 	public float effectCoef{
 		set{mEffectCoef = value;}
 		get{return mEffectCoef;}
+	}
+	public DeformationSourceType deformationType{
+		get{return mDeformationType;}
+		set{mDeformationType = value;}
+	}
+	public LayerMask cullingMask{
+		get{return mCullingMask;}
+		set{mCullingMask = value;}
+	}
+	public bool rotateAroundSource{
+		get{return mRotateAroundSource;}
+		set{mRotateAroundSource = value;}
+	}
+	public float spiraleAmplitude{
+		get{return mSpiraleAmplitude;}
+		set{mSpiraleAmplitude = value;}
 	}
 	#endregion
 
@@ -197,7 +229,7 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 			}
 		}
 
-		iff(refreshOnObjectsMove) {
+		if(mRefreshOnObjectsMove) {
 			_BuildObjectTransformsList();
 		}
 	}
@@ -220,6 +252,15 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 
 	#region MESH_DEFORMATION
 	/**
+	 * Remove deformation on all objects
+	 * */
+	public void ResetDeformations(){
+		for (int i = 0; i < mDeformedObjects.Count; i++) {
+			_ResetDeformationOn(mDeformedObjects[i],mOriginalMeshes[i]);
+		}
+	}
+
+	/**
 	 * Apply deformation on all objects
 	 * */
 	public void ApplyDeformations(){
@@ -229,10 +270,17 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 	}
 
 	/**
+	 * Remove deformation effect on mesh
+	 * */
+	private void _ResetDeformationOn(GameObject obj,Vector3[] vertices){
+		MeshFilter meshFilter = obj.GetComponent<MeshFilter> ();
+		meshFilter.mesh.vertices = vertices;
+	}
+
+	/**
 	 * Apply deformation on mesh for the object
 	 * */
 	private void _ApplyDeformationOn(GameObject obj,Vector3[] vertices){
-		
 		MeshFilter meshFilter = obj.GetComponent<MeshFilter> ();
 		Mesh deformedMesh = meshFilter.mesh; /// copy structure
 
@@ -251,9 +299,22 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 			case DeformationSourceType.Directionnal :
 				Plane refPlane = new Plane(transform.up,transform.position);
 				vertexDistance = refPlane.GetDistanceToPoint(vertex);
-				direction = vertexDistance * transform.up;
+
+				// if it is not bidirectionnal and the point is not in the good side
+				if(!mIsBidirectionnal && vertexDistance < 0){
+					vertexDistance = mEffectRange + 1;
+					break;
+				}
+				
+				direction = vertexDistance * -transform.up;
+
+				if(vertexDistance < 0){
+					vertexDistance *= -1;
+				}
 				break;
-			case DeformationSourceType.Spirale :
+			case DeformationSourceType.Spirale:
+				vertexDistance = Vector3.Distance (vertex, this.transform.position);
+				direction = (transform.position - vertex);
 				break;
 			}
 
@@ -263,6 +324,21 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 
 				vertex += direction * effect;
 
+				// deformation spirale, apply rotation to each vertex
+				if(mDeformationType == DeformationSourceType.Spirale){
+					Vector3 rotationAxis = 
+						mRotateAroundSource ? transform.up
+							: obj.transform.up;
+					float angle = (1 - relDistance) * mSpiraleAmplitude;
+					Quaternion rotation = Quaternion.Euler(rotationAxis * angle);
+					// local positionning
+					vertex -= transform.position;
+					// rotate the point
+					vertex = rotation * vertex;
+					// replace in world
+					vertex += transform.position;	
+				}
+				
 				newVertices[i] = obj.transform.InverseTransformPoint(vertex);
 			}
 			else{
@@ -276,12 +352,16 @@ public class DeformationSourceBehaviour : MonoBehaviour {
 	}
 	#endregion
 
+	#region UTILS
+
+	#endregion
+
 	#region DELEGATE
 	private float _ExponentialDeformation(float relDistance){
-		return relDistance == 0 ? 1 : 1 - Mathf.Exp (-relDistance * mEffectCoef);
+		return relDistance <= 0 ? 1 : 1 - Mathf.Exp (-relDistance * mEffectCoef);
 	}
 	private float _LinearDeformation(float relDistance){
-		float result = (1 - relDistance) * mEffectCoef / 10;
+		float result = (1 - relDistance) * mEffectCoef;
 		return result > 1 ? 1 : result;
 	}
 	#endregion
